@@ -35,7 +35,7 @@ GS_USUARIOS          = "1NY0RalNq2a3oDha6EzAWdmsy_MabaLXv"   # Supervisor Planta
 GS_USUARIOS_PLANTA   = "1NY0RalNq2a3oDha6EzAWdmsy_MabaLXv"   # Supervisor Planta
 GS_USUARIOS_SI       = "1QTcmxTH6gy-drKcZaKN_kvRH2vD2UuM3"   # Seguridad Industrial
 GS_USUARIOS_SEG_FIS  = "1ZnDqdcUjEFU9GVvk7StZF8j7KJbrU7E8"   # Seguridad Física
-DRIVE_FOLDER_ID      = "1aWHhxl8oSLcwBLqAS5I7S13DxKuww_fb"
+DRIVE_FOLDER_ID      = "1Fn4XKBNLyDSPmeuvoYbykPyaQsv6-OdG"
 UPLOADS_DIR = "uploads"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -499,6 +499,87 @@ def enviar_email_supervisores(
         return False, str(e)
 
 
+def _enviar_correo_aprobacion(fila, nombre: str, empresa: str):
+    """Envía correo al correo de empresa notificando que la solicitud fue aprobada."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    correo_dest = str(fila.get("Correo_Empresa", "")).strip()
+    if not correo_dest or "@" not in correo_dest:
+        st.info(f"ℹ️ Sin correo de empresa registrado para {nombre} — notificación no enviada.")
+        return
+
+    smtp_host = os.environ.get("SMTP_HOST", "")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER", "")
+    smtp_pass = os.environ.get("SMTP_PASS", "")
+    if not smtp_host or not smtp_user:
+        return
+
+    sol_planta = str(fila.get("Solicitante", "—"))
+    sol_si     = str(fila.get("Supervisor_SI", "—"))
+    cedula     = str(fila.get("Cedula", "—"))
+    horario    = str(fila.get("Horario", "—"))
+    f_ingreso  = str(fila.get("Fecha_Induccion", "—"))
+    f_salida   = str(fila.get("Fecha_Caducidad", "—"))
+
+    cuerpo = f"""<html><body style="font-family:Arial,sans-serif;color:#1a1a2e">
+<h2 style="color:#27ae60">✅ Solicitud de Ingreso APROBADA — Quimpac Ecuador S.A.</h2>
+<p>Estimado(a) representante de <b>{empresa}</b>,</p>
+<p>Nos complace informarle que la solicitud de ingreso para el siguiente trabajador
+ha sido <b style="color:#27ae60">aprobada</b> por Supervisor de Planta y Seguridad Industrial:</p>
+<table style="border-collapse:collapse;width:100%;margin:12px 0">
+  <tr style="background:#f3f4f6">
+    <td style="padding:7px;font-weight:bold;border:1px solid #ddd">Trabajador</td>
+    <td style="padding:7px;border:1px solid #ddd">{nombre}</td>
+  </tr>
+  <tr>
+    <td style="padding:7px;font-weight:bold;border:1px solid #ddd">Cédula</td>
+    <td style="padding:7px;border:1px solid #ddd">{cedula}</td>
+  </tr>
+  <tr style="background:#f3f4f6">
+    <td style="padding:7px;font-weight:bold;border:1px solid #ddd">Empresa</td>
+    <td style="padding:7px;border:1px solid #ddd">{empresa}</td>
+  </tr>
+  <tr>
+    <td style="padding:7px;font-weight:bold;border:1px solid #ddd">Horario autorizado</td>
+    <td style="padding:7px;border:1px solid #ddd">{horario}</td>
+  </tr>
+  <tr style="background:#f3f4f6">
+    <td style="padding:7px;font-weight:bold;border:1px solid #ddd">Período</td>
+    <td style="padding:7px;border:1px solid #ddd">{f_ingreso} → {f_salida}</td>
+  </tr>
+  <tr>
+    <td style="padding:7px;font-weight:bold;border:1px solid #ddd">Aprobado por (Planta)</td>
+    <td style="padding:7px;border:1px solid #ddd">{sol_planta}</td>
+  </tr>
+  <tr style="background:#f3f4f6">
+    <td style="padding:7px;font-weight:bold;border:1px solid #ddd">Aprobado por (Seg. Industrial)</td>
+    <td style="padding:7px;border:1px solid #ddd">{sol_si}</td>
+  </tr>
+</table>
+<p>El trabajador puede ingresar a las instalaciones de Quimpac Ecuador S.A.
+durante el período indicado y en el horario autorizado.</p>
+<hr>
+<p style="font-size:.8rem;color:#6b7280">Mensaje automático — Quimpac Ecuador S.A. Security Access</p>
+</body></html>"""
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"]    = smtp_user
+        msg["To"]      = correo_dest
+        msg["Subject"] = f"[Security Access] Solicitud APROBADA — {nombre} / {empresa}"
+        msg.attach(MIMEText(cuerpo, "html"))
+        with smtplib.SMTP(smtp_host, smtp_port) as s:
+            s.starttls()
+            s.login(smtp_user, smtp_pass)
+            s.sendmail(smtp_user, [correo_dest], msg.as_string())
+        st.success(f"📧 Correo de aprobación enviado a la empresa: {correo_dest}")
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo enviar correo de aprobación a {correo_dest}: {e}")
+
+
 # ─── PDF: EXTRACCIÓN DE FECHAS ────────────────────────────────────────────────
 PATRONES_CADUCIDAD = [
     r"(?:v[aá]lid[ao]\s+hasta|vigente\s+hasta|caducidad|vencimiento|expira(?:ci[oó]n)?|fecha\s+de\s+vencimiento)[^\d]{0,15}(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})",
@@ -954,6 +1035,11 @@ elif modulo == "📝 Solicitud de Ingreso":
     empresa = ca.text_input(
         "Empresa / Razón social *", placeholder="Ej: TechMaint S.A."
     )
+    correo_empresa = cb.text_input(
+        "Correo de empresa *",
+        placeholder="Ej: contacto@techmaint.com",
+        help="Se usará para notificar cuando la solicitud sea aprobada.",
+    )
 
     cc, cd = st.columns([2, 2])
     f_ingreso = cc.date_input("Fecha de ingreso *", value=date.today())
@@ -1193,6 +1279,7 @@ Una vez configurado, al enviar la solicitud los supervisores recibirán **autom�
                         "_fname_sal":  f_sal.name  if f_sal  else "",
                         "_fname_rie":  f_rie.name  if f_rie  else "",
                         "_fname_ced":  f_ced.name  if f_ced  else "",
+                        "Correo_Empresa": correo_empresa.strip(),
                         "Aprobado_Planta": False,
                         "Aprobado_SST": False,
                         "Fuente": "Solicitud",
@@ -1212,10 +1299,12 @@ Una vez configurado, al enviar la solicitud los supervisores recibirán **autom�
 
     st.markdown("---")
     if st.button(
-        "🚀 Enviar Solicitud de Ingreso", type="primary", use_container_width=True
+        "Enviar Solicitud de Ingreso", type="primary", use_container_width=True
     ):
         if not empresa.strip():
             st.error("❌ Ingrese el nombre de la empresa.")
+        elif not correo_empresa.strip() or "@" not in correo_empresa:
+            st.error("❌ Ingrese un correo de empresa válido.")
         elif not supervisor:
             st.error("❌ Seleccione el Supervisor de Planta.")
         elif not supervisor_si:
@@ -1298,7 +1387,7 @@ Una vez configurado, al enviar la solicitud los supervisores recibirán **autom�
                     st.success(f"📧 Correo enviado correctamente a: {', '.join(emails_dest)} · {len(pdfs_para_correo)} PDF(s) adjuntos")
                 else:
                     st.error(f"❌ Error al enviar correo: {msg_mail}")
-            st.balloons()
+            st.success("Solicitud de ingreso enviada")
 
 # ════════════════════════════════════════════════════════════════════════════════
 # VERIFICACIÓN EN GARITA
@@ -1558,6 +1647,10 @@ elif modulo == "✅ Gestión de Aprobaciones":
                                 idx, "Aprobado_Planta"
                             ] = nuevo_p
                             st.success(f"✅ Aprobación Planta guardada: {nombre}")
+                            # Verificar si ahora ambas aprobaciones están completas
+                            ahora_ap_s = bool(st.session_state.nuevos_contratistas.at[idx, "Aprobado_SST"])
+                            if nuevo_p and ahora_ap_s:
+                                _enviar_correo_aprobacion(fila, nombre, empresa)
                             st.rerun()
 
                     elif rol_actual == "Seguridad Industrial":
@@ -1576,6 +1669,10 @@ elif modulo == "✅ Gestión de Aprobaciones":
                             st.success(
                                 f"✅ Aprobación Seg. Industrial guardada: {nombre}"
                             )
+                            # Verificar si ahora ambas aprobaciones están completas
+                            ahora_ap_p = bool(st.session_state.nuevos_contratistas.at[idx, "Aprobado_Planta"])
+                            if nuevo_s and ahora_ap_p:
+                                _enviar_correo_aprobacion(fila, nombre, empresa)
                             st.rerun()
 
                     if ambos_ap:
