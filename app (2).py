@@ -30,9 +30,12 @@ def get_logo_b64():
 LOGO_B64 = get_logo_b64()
 
 # ─── IDs Google Sheets / Drive ────────────────────────────────────────────────
-GS_CONTRATISTAS = "15mQCUavdet-Yt1XIe3uMEk8x2eCZu8TL"
-GS_USUARIOS = "1NY0RalNq2a3oDha6EzAWdmsy_MabaLXv"
-DRIVE_FOLDER_ID = "1aWHhxl8oSLcwBLqAS5I7S13DxKuww_fb"
+GS_CONTRATISTAS      = "15mQCUavdet-Yt1XIe3uMEk8x2eCZu8TL"
+GS_USUARIOS          = "1NY0RalNq2a3oDha6EzAWdmsy_MabaLXv"   # Supervisor Planta
+GS_USUARIOS_PLANTA   = "1NY0RalNq2a3oDha6EzAWdmsy_MabaLXv"   # Supervisor Planta
+GS_USUARIOS_SI       = "1QTcmxTH6gy-drKcZaKN_kvRH2vD2UuM3"   # Seguridad Industrial
+GS_USUARIOS_SEG_FIS  = "1ZnDqdcUjEFU9GVvk7StZF8j7KJbrU7E8"   # Seguridad Física
+DRIVE_FOLDER_ID      = "1aWHhxl8oSLcwBLqAS5I7S13DxKuww_fb"
 UPLOADS_DIR = "uploads"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -370,6 +373,57 @@ def verificar_login(sheet, usuario, clave):
 
 
 @st.cache_data(ttl=60)
+def cargar_usuarios_por_id(spreadsheet_id):
+    """Carga usuarios desde cualquier Google Sheet ID (hoja principal, sin pestaña)."""
+    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv"
+    df = pd.read_csv(url, header=None, dtype=str)
+    header_row = 0
+    for i, row in df.iterrows():
+        if any(str(v).strip().lower() == "usuario" for v in row.values):
+            header_row = i
+            break
+    df = df.iloc[header_row + 1:].reset_index(drop=True)
+    ncols = len(df.columns)
+    if ncols >= 3:
+        df = df.iloc[:, :3]
+        df.columns = ["Usuario", "Clave", "Correo"]
+    else:
+        df = df.iloc[:, :2]
+        df.columns = ["Usuario", "Clave"]
+        df["Correo"] = ""
+    df = df[df["Usuario"].notna()].copy()
+    df["Usuario"] = df["Usuario"].astype(str).str.strip()
+    df["Clave"]   = df["Clave"].astype(str).str.strip()
+    df["Correo"]  = df["Correo"].astype(str).str.strip()
+    df["Correo"]  = df["Correo"].replace({"nan": "", "NaN": "", "none": "", "None": ""})
+    df = df[~df["Usuario"].str.lower().isin(["", "nan", "usuario", "none"])].copy()
+    return df
+
+
+def verificar_login_por_id(spreadsheet_id, usuario, clave):
+    """Verifica credenciales contra un Google Sheet específico por ID."""
+    try:
+        df = cargar_usuarios_por_id(spreadsheet_id)
+        match = df[(df["Usuario"] == usuario) & (df["Clave"] == clave)]
+        return not match.empty
+    except Exception as e:
+        st.error(f"Error al verificar credenciales: {e}")
+        return False
+
+
+@st.cache_data(ttl=60)
+def cargar_supervisores_por_id(spreadsheet_id):
+    """Retorna (lista_nombres, dict_correos) desde un Google Sheet por ID."""
+    try:
+        df = cargar_usuarios_por_id(spreadsheet_id)
+        nombres = sorted(df["Usuario"].tolist())
+        correos = dict(zip(df["Usuario"], df["Correo"]))
+        return nombres, correos
+    except Exception:
+        return [], {}
+
+
+@st.cache_data(ttl=60)
 def cargar_supervisores(sheet):
     """Retorna lista de nombres y dict {nombre: correo} para el dropdown."""
     try:
@@ -381,41 +435,11 @@ def cargar_supervisores(sheet):
         return [], {}
 
 
-@st.cache_data(ttl=60)
 def cargar_supervisores_desde_qp():
-    """
-    Lee la pestaña QP y retorna TODOS los usuarios en ambas listas desplegables.
-    Retorna (nombres_planta, correos_planta, nombres_si, correos_si).
-    """
-    url = (
-        f"https://docs.google.com/spreadsheets/d/{GS_USUARIOS}"
-        f"/export?format=csv&sheet=QP"
-    )
-    try:
-        raw = pd.read_csv(url, header=None, dtype=str)
-        # Estructura: fila 0 = título, fila 1 = cabecera, fila 2+ = datos
-        # Buscar la fila que tiene "Usuario" como cabecera
-        header_idx = 0
-        for i, row in raw.iterrows():
-            if any(str(v).strip().lower() == "usuario" for v in row.values):
-                header_idx = i
-                break
-        datos = raw.iloc[header_idx + 1:].reset_index(drop=True)
-        # Columnas: 0=Usuario, 1=Clave, 2=Correo, 3=Departamento
-        datos.columns = range(len(datos.columns))
-        usuarios = datos[0].astype(str).str.strip()
-        correos  = datos[2].astype(str).str.strip() if len(datos.columns) > 2 else pd.Series([""] * len(datos))
-        # Limpiar valores vacíos o "nan"
-        mask = ~usuarios.str.lower().isin(["", "nan", "usuario", "none"])
-        usuarios = usuarios[mask].reset_index(drop=True)
-        correos  = correos[mask].reset_index(drop=True)
-        correos  = correos.replace({"nan": "", "NaN": "", "none": ""})
-        nombres = sorted(usuarios.tolist())
-        correos_dict = dict(zip(usuarios, correos))
-        # Todos los nombres van en ambas listas
-        return nombres, correos_dict, nombres, correos_dict
-    except Exception:
-        return [], {}, [], {}
+    """Compatibilidad: carga Planta desde GS_USUARIOS_PLANTA y SI desde GS_USUARIOS_SI."""
+    sup_qp_lista, sup_qp_correos = cargar_supervisores_por_id(GS_USUARIOS_PLANTA)
+    sup_si_lista, sup_si_correos = cargar_supervisores_por_id(GS_USUARIOS_SI)
+    return sup_qp_lista, sup_qp_correos, sup_si_lista, sup_si_correos
 
 
 def enviar_email_supervisores(
@@ -571,8 +595,21 @@ def get_db_completa():
         base = _df_vacio()
     nuevos = st.session_state.nuevos_contratistas
     if not nuevos.empty:
-        return pd.concat([base, nuevos], ignore_index=True)
-    return base
+        df = pd.concat([base, nuevos], ignore_index=True)
+    else:
+        df = base.copy()
+    # Deduplicar por cédula: conservar la fila con la Fecha_Induccion más reciente.
+    # Las solicitudes nuevas (en session_state) tienen prioridad sobre el historial
+    # del Sheet cuando la fecha es igual, gracias al orden de concat (nuevos al final).
+    if "Cedula" in df.columns and not df.empty:
+        df["Cedula"] = df["Cedula"].astype(str).str.strip()
+        df = (
+            df
+            .sort_values("Fecha_Induccion", ascending=False, na_position="last")
+            .drop_duplicates(subset=["Cedula"], keep="first")
+            .reset_index(drop=True)
+        )
+    return df
 
 
 def evaluar(fila):
@@ -605,12 +642,11 @@ def evaluar(fila):
     elif cal_num < 60:
         motivos.append(f"❌ Calificación de inducción insuficiente ({cal_num:.0f}/100 — mínimo 60)")
 
-    # ── 3. Aprobaciones (solo para solicitudes nuevas, no historial Sheets) ─
-    if str(fila.get("Fuente", "")) != "Google Sheets":
-        if not fila.get("Aprobado_Planta", False):
-            motivos.append("⚠️ Pendiente aprobación Supervisor de Planta")
-        if not fila.get("Aprobado_SST", False):
-            motivos.append("⚠️ Pendiente aprobación Supervisor Seg. Industrial")
+    # ── 3. Aprobaciones — obligatorias para TODOS ──────────────────────────
+    if not fila.get("Aprobado_Planta", False):
+        motivos.append("⚠️ Pendiente aprobación Supervisor de Planta")
+    if not fila.get("Aprobado_SST", False):
+        motivos.append("⚠️ Pendiente aprobación Supervisor Seg. Industrial")
 
     return len(motivos) == 0, motivos
 
@@ -639,11 +675,13 @@ MODULOS_POR_ROL = {
     "Supervisor Planta": [
         "🏠 Dashboard",
         "✅ Gestión de Aprobaciones",
+        "📋 Auditoría de Permisos de Trabajo",
         "📊 Registro de Accesos",
     ],
     "Seguridad Industrial": [
         "🏠 Dashboard",
         "✅ Gestión de Aprobaciones",
+        "📋 Auditoría de Permisos de Trabajo",
         "📊 Registro de Accesos",
     ],
 }
@@ -771,10 +809,10 @@ if not st.session_state.logged_in:
                 st.rerun()
 
         elif rol_sel in ("Seguridad Física", "Supervisor Planta", "Seguridad Industrial"):
-            sheet_map = {
-                "Seguridad Física": "Seguridad",
-                "Supervisor Planta": "QP",
-                "Seguridad Industrial": "Seg. Industrial",
+            sheet_id_map = {
+                "Seguridad Física":     GS_USUARIOS_SEG_FIS,
+                "Supervisor Planta":    GS_USUARIOS_PLANTA,
+                "Seguridad Industrial": GS_USUARIOS_SI,
             }
             st.markdown("<br>", unsafe_allow_html=True)
             u_inp = st.text_input("Usuario", placeholder="Ingrese su usuario")
@@ -783,7 +821,7 @@ if not st.session_state.logged_in:
             if st.button("🔐 Iniciar Sesión", type="primary", use_container_width=True):
                 if not u_inp or not p_inp:
                     st.error("Complete usuario y contraseña.")
-                elif verificar_login(sheet_map[rol_sel], u_inp.strip(), p_inp.strip()):
+                elif verificar_login_por_id(sheet_id_map[rol_sel], u_inp.strip(), p_inp.strip()):
                     st.session_state.update(
                         {
                             "logged_in": True,
@@ -1346,29 +1384,99 @@ elif modulo == "🛡️ Verificación Garita":
                         )
 
     with tab_emp:
-        empresas = ["— Seleccione —"] + sorted(
-            df_g["Empresa"].str.strip().unique().tolist()
-        )
+        # Filtrar empresas válidas (sin blancos, nan ni encabezados)
+        empresas_validas = sorted([
+            e for e in df_g["Empresa"].str.strip().unique().tolist()
+            if e and e.lower() not in ("nan", "empresa", "")
+        ])
+        empresas = ["— Seleccione —"] + empresas_validas
         emp_sel = st.selectbox("Empresa:", empresas)
         if emp_sel != "— Seleccione —":
-            sub = df_g[df_g["Empresa"].str.strip() == emp_sel]
-            st.markdown(f"#### Personal de: **{emp_sel}** ({len(sub)} registros)")
-            hoy = pd.Timestamp(date.today())
-            for _, fila in sub.iterrows():
-                ok, _ = evaluar(fila)
-                cad = fila.get("Fecha_Caducidad")
-                cad_str = str(pd.Timestamp(cad).date()) if pd.notna(cad) else "—"
-                badge = (
-                    "<span class='bok'>✅</span>"
-                    if ok
-                    else "<span class='bno'>🚫</span>"
-                )
-                r = st.columns([3, 2, 2, 2, 1])
-                r[0].write(str(fila["Nombre"]))
-                r[1].write(str(fila["Cedula"]))
-                r[2].write(str(fila.get("Horario", "—")) or "—")
-                r[3].write(cad_str)
-                r[4].markdown(badge, unsafe_allow_html=True)
+            sub = df_g[df_g["Empresa"].str.strip() == emp_sel].copy()
+            total = len(sub)
+
+            # Pre-calcular estado de cada persona
+            evaluaciones = [(fila, *evaluar(fila)) for _, fila in sub.iterrows()]
+            aprobados = sum(1 for _, ok, _ in evaluaciones if ok)
+
+            st.markdown(
+                f"#### 🏢 {emp_sel} &nbsp;·&nbsp; {total} registros &nbsp;·&nbsp; "
+                f"<span style='color:#1a7f37'>{aprobados} autorizados</span> &nbsp;·&nbsp; "
+                f"<span style='color:#b91c1c'>{total - aprobados} bloqueados</span>",
+                unsafe_allow_html=True,
+            )
+            st.divider()
+
+            for fila, ok, motivos_fila in evaluaciones:
+                nombre  = str(fila.get("Nombre", "—"))
+                cedula  = str(fila.get("Cedula", "—"))
+                ind_raw = fila.get("Fecha_Induccion")
+                cad_raw = fila.get("Fecha_Caducidad")
+                cal_raw = fila.get("Calificacion")
+                ind_str = str(pd.Timestamp(ind_raw).date()) if pd.notna(ind_raw) else "Sin datos"
+                cad_str = str(pd.Timestamp(cad_raw).date()) if pd.notna(cad_raw) else "Sin datos"
+                try:
+                    cal_str = f"{float(cal_raw):.0f}/100"
+                except Exception:
+                    cal_str = "Sin datos"
+
+                # Clasificar el estado: autorizado / pendiente_aprobacion / denegado
+                motivos_criticos   = [m for m in motivos_fila if m.startswith("❌")]
+                motivos_pendientes = [m for m in motivos_fila if m.startswith("⚠️")]
+
+                if ok:
+                    card_bg  = "#d1fae5"; border  = "#1a7f37"
+                    badge    = "✅"
+                    estado   = "ACCESO AUTORIZADO"
+                    color_e  = "#1a7f37"
+                    notas    = []
+                elif not motivos_criticos and motivos_pendientes:
+                    # Solo faltan aprobaciones — calificación y fecha están bien
+                    card_bg  = "#fef9c3"; border  = "#ca8a04"
+                    badge    = "🕐"
+                    estado   = "PENDIENTE DE APROBACIÓN"
+                    color_e  = "#854d0e"
+                    notas    = motivos_pendientes
+                else:
+                    card_bg  = "#fee2e2"; border  = "#b91c1c"
+                    badge    = "🚫"
+                    estado   = "ACCESO DENEGADO"
+                    color_e  = "#b91c1c"
+                    notas    = motivos_fila
+
+                # Construir lista de motivos como texto plano (evita problemas de HTML anidado)
+                notas_lines = "\n".join(f"  • {m}" for m in notas) if notas else ""
+
+                col_card, col_badge = st.columns([6, 1])
+                with col_card:
+                    st.markdown(
+                        f"<div style='background:{card_bg};border-left:5px solid {border};"
+                        f"border-radius:8px;padding:.75rem 1rem;margin-bottom:.4rem'>"
+                        f"<p style='margin:0 0 .25rem 0;font-size:.68rem;color:#6b7280;"
+                        f"text-transform:uppercase;letter-spacing:.06em'>Nombre</p>"
+                        f"<p style='margin:0 0 .35rem 0;font-size:1rem;font-weight:700;"
+                        f"display:flex;justify-content:space-between'>"
+                        f"<span>{nombre}</span>"
+                        f"<span style='font-size:.85rem;color:{color_e}'><b>{estado}</b></span></p>"
+                        f"<p style='margin:0;font-size:.82rem;color:#374151'>"
+                        f"<b>Cédula:</b> {cedula} &nbsp;|&nbsp; "
+                        f"<b>Inducción:</b> {ind_str} &nbsp;|&nbsp; "
+                        f"<b>Caducidad:</b> {cad_str} &nbsp;|&nbsp; "
+                        f"<b>Calificación:</b> {cal_str}</p>"
+                        + (
+                            f"<p style='margin:.35rem 0 0 0;font-size:.78rem;color:{color_e}'>"
+                            + " &nbsp;·&nbsp; ".join(notas)
+                            + "</p>"
+                            if notas else ""
+                        )
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
+                with col_badge:
+                    st.markdown(
+                        f"<p style='text-align:center;font-size:2rem;margin:.4rem 0 0 0'>{badge}</p>",
+                        unsafe_allow_html=True,
+                    )
 
 # ════════════════════════════════════════════════════════════════════════════════
 # GESTIÓN DE APROBACIONES
@@ -1594,3 +1702,279 @@ elif modulo == "📊 Registro de Accesos":
         st.caption(f"Mostrando {len(df_s):,} de {len(df_full):,} registros")
         csv2 = df_s[cols_v].to_csv(index=False).encode("utf-8")
         st.download_button("⬇️ Descargar CSV", csv2, "contratistas.csv", "text/csv")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# AUDITORÍA DE PERMISOS DE TRABAJO
+# ════════════════════════════════════════════════════════════════════════════════
+elif modulo == "📋 Auditoría de Permisos de Trabajo":
+
+    # ── Encabezado con logo a la derecha ──────────────────────────────────────
+    hdr_l, hdr_r = st.columns([5, 1])
+    with hdr_l:
+        st.markdown(
+            "<h2 style='margin-bottom:.1rem'>Órdenes de Servicios Estandarizados y Auditados</h2>"
+            "<p style='color:#6b7280;margin-top:0'>aplicados en el mes</p>",
+            unsafe_allow_html=True,
+        )
+    with hdr_r:
+        if LOGO_B64:
+            st.markdown(
+                f"<div style='text-align:right;padding-top:.5rem'>"
+                f"<img src='data:image/png;base64,{LOGO_B64}' style='height:56px;"
+                f"background:#fff;border-radius:6px;padding:3px'></div>",
+                unsafe_allow_html=True,
+            )
+    st.divider()
+
+    # ── Datos generales ───────────────────────────────────────────────────────
+    st.markdown("#### 📝 Datos generales")
+    g1, g2 = st.columns(2)
+    aud_trabajo_por = g1.text_input("Trabajo realizado por:", placeholder="Nombre o empresa contratista")
+    aud_area        = g2.text_input("Área:", placeholder="Ej: Planta de Cloro, Bodega, etc.")
+    g3, g4 = st.columns(2)
+    aud_abre_permiso = g3.text_input("Persona que abrió el permiso de trabajo:", placeholder="Nombre completo")
+    aud_fecha        = g4.date_input("Fecha:", value=date.today())
+
+    st.divider()
+
+    # ── Tabla de aspectos a evaluar ───────────────────────────────────────────
+    ASPECTOS = [
+        "Condiciones de herramientas",
+        "Condiciones de trabajo",
+        "Correcta elaboración de permiso de trabajo",
+        "Identificación",
+        "Inducción y riesgo de tarea",
+        "Orden y limpieza",
+        "Orden de trabajo",
+        "Permiso de trabajo",
+        "Señalización",
+        "Utilización de EPP en el área o tarea realizada",
+    ]
+
+    st.markdown("#### ✅ Aspectos a evaluar")
+    # Encabezados de tabla
+    th = st.columns([1, 5, 2, 4])
+    for label, col in zip(["**Item**", "**Aspectos a evaluar**", "**Cumplimiento**", "**Observación**"], th):
+        col.markdown(label)
+    st.markdown("<hr style='margin:.3rem 0'>", unsafe_allow_html=True)
+
+    aud_aspectos = []
+    for i, aspecto in enumerate(ASPECTOS, start=1):
+        c_num, c_asp, c_si_no, c_obs = st.columns([1, 5, 2, 4])
+        c_num.markdown(f"**{i}**")
+        c_asp.markdown(aspecto)
+        cumple = c_si_no.selectbox(
+            f"_cumple_{i}",
+            options=["—", "Sí", "No"],
+            label_visibility="collapsed",
+            key=f"aud_cumple_{i}",
+        )
+        obs = c_obs.text_input(
+            f"_obs_{i}",
+            placeholder="Observación...",
+            label_visibility="collapsed",
+            key=f"aud_obs_{i}",
+        )
+        aud_aspectos.append({"item": i, "aspecto": aspecto, "cumplimiento": cumple, "observacion": obs})
+
+    st.divider()
+
+    # ── Tabla de personal auditado (20 filas) ─────────────────────────────────
+    st.markdown("#### 👷 Personal auditado")
+    ph = st.columns([1, 5, 3])
+    for label, col in zip(["**Item**", "**Personal auditado**", "**Cédula**"], ph):
+        col.markdown(label)
+    st.markdown("<hr style='margin:.3rem 0'>", unsafe_allow_html=True)
+
+    aud_personal = []
+    for i in range(1, 21):
+        p_num, p_nom, p_ced = st.columns([1, 5, 3])
+        p_num.markdown(f"**{i}**")
+        nombre_p = p_nom.text_input(
+            f"_pnom_{i}",
+            placeholder="Nombre completo",
+            label_visibility="collapsed",
+            key=f"aud_pnom_{i}",
+        )
+        cedula_p = p_ced.text_input(
+            f"_pced_{i}",
+            placeholder="0000000000",
+            label_visibility="collapsed",
+            max_chars=10,
+            key=f"aud_pced_{i}",
+        )
+        # Validar que solo tenga dígitos
+        cedula_p_clean = "".join(c for c in cedula_p if c.isdigit())[:10]
+        if cedula_p and cedula_p != cedula_p_clean:
+            p_ced.caption("⚠️ Solo números")
+        aud_personal.append({"item": i, "nombre": nombre_p, "cedula": cedula_p_clean})
+
+    st.divider()
+
+    # ── Campos finales ────────────────────────────────────────────────────────
+    aud_observaciones = st.text_area(
+        "📝 Observaciones generales:",
+        placeholder="Ingrese observaciones relevantes sobre la auditoría...",
+        height=100,
+    )
+    aud_realizada_por = st.text_input(
+        "👤 Auditoría realizada por:",
+        placeholder="Nombre completo del auditor",
+    )
+
+    st.divider()
+
+    # ── Subida de imagen / PDF ────────────────────────────────────────────────
+    st.markdown("#### 📎 Adjuntar evidencia")
+    aud_archivo = st.file_uploader(
+        "Seleccione un archivo (JPG, JPEG o PDF):",
+        type=["jpg", "jpeg", "pdf"],
+        accept_multiple_files=False,
+        help="Se aceptan archivos JPG, JPEG y PDF",
+    )
+    if aud_archivo:
+        ext = aud_archivo.name.rsplit(".", 1)[-1].lower()
+        if ext in ("jpg", "jpeg"):
+            st.image(aud_archivo, caption=f"Vista previa: {aud_archivo.name}", use_container_width=True)
+        else:
+            st.success(f"📄 Archivo adjunto: **{aud_archivo.name}** ({aud_archivo.size / 1024:.1f} KB)")
+
+    st.divider()
+
+    # ── Selección de persona de Seguridad Industrial para envío de reporte ────
+    st.markdown("#### 📤 Envío de reporte")
+    si_lista_aud, si_correos_aud = cargar_supervisores_por_id(GS_USUARIOS_SI)
+    opciones_si_aud = ["— Seleccione —"] + si_lista_aud
+    aud_si_sel = st.selectbox(
+        "👤 Seleccione persona de Seguridad Industrial para envío de reporte:",
+        opciones_si_aud,
+        key="aud_si_destinatario",
+    )
+    aud_si_email = si_correos_aud.get(aud_si_sel, "") if aud_si_sel != "— Seleccione —" else ""
+    if aud_si_sel != "— Seleccione —":
+        color_e = "#27ae60" if aud_si_email else "#e74c3c"
+        txt_e   = aud_si_email if aud_si_email else "sin correo registrado"
+        st.markdown(
+            f"<span style='font-size:.85rem'>📧 Correo destino: "
+            f"<b style='color:{color_e}'>{txt_e}</b></span>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Botón guardar / resumen ───────────────────────────────────────────────
+    if st.button("💾 Guardar y Enviar Auditoría", type="primary", use_container_width=True):
+        errores = []
+        if not aud_trabajo_por.strip():
+            errores.append("• Indique quién realizó el trabajo.")
+        if not aud_area.strip():
+            errores.append("• Indique el área.")
+        if not aud_abre_permiso.strip():
+            errores.append("• Indique quién abrió el permiso de trabajo.")
+        if not aud_realizada_por.strip():
+            errores.append("• Indique quién realizó la auditoría.")
+        sin_evaluar = [a["aspecto"] for a in aud_aspectos if a["cumplimiento"] == "—"]
+        if sin_evaluar:
+            errores.append(f"• Faltan {len(sin_evaluar)} aspecto(s) sin evaluar.")
+
+        if errores:
+            st.error("Por favor complete los campos requeridos:\n" + "\n".join(errores))
+        else:
+            personal_valido = [p for p in aud_personal if p["nombre"].strip()]
+            cumplidos  = sum(1 for a in aud_aspectos if a["cumplimiento"] == "Sí")
+            no_cumplen = sum(1 for a in aud_aspectos if a["cumplimiento"] == "No")
+            pct = int(cumplidos / len(ASPECTOS) * 100) if ASPECTOS else 0
+
+            st.success(
+                f"✅ Auditoría registrada para **{aud_area.strip()}** "
+                f"— {aud_fecha.strftime('%d/%m/%Y')}"
+            )
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Aspectos OK", f"{cumplidos}/{len(ASPECTOS)}")
+            r2.metric("No cumplen", no_cumplen)
+            r3.metric("Cumplimiento", f"{pct}%")
+            r4.metric("Personal auditado", len(personal_valido))
+
+            # ── Envío de correo al Supervisor de SI ──────────────────────────
+            smtp_act = bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER"))
+            if aud_si_sel == "— Seleccione —":
+                st.info("ℹ️ No se seleccionó persona de Seguridad Industrial — reporte no enviado por correo.")
+            elif not aud_si_email:
+                st.warning(f"⚠️ El usuario '{aud_si_sel}' no tiene correo registrado en el Sheet de SI.")
+            elif not smtp_act:
+                st.info("ℹ️ Correo no enviado: configure las variables SMTP en Secrets.")
+            else:
+                # Construir cuerpo del reporte
+                import smtplib
+                from email.mime.multipart import MIMEMultipart
+                from email.mime.text import MIMEText
+                from email.mime.application import MIMEApplication
+
+                tabla_asp = "".join(
+                    f"<tr><td style='padding:4px;border:1px solid #ddd'>{a['item']}</td>"
+                    f"<td style='padding:4px;border:1px solid #ddd'>{a['aspecto']}</td>"
+                    f"<td style='padding:4px;border:1px solid #ddd;text-align:center'>"
+                    f"{'✅' if a['cumplimiento']=='Sí' else ('❌' if a['cumplimiento']=='No' else '—')}</td>"
+                    f"<td style='padding:4px;border:1px solid #ddd'>{a['observacion']}</td></tr>"
+                    for a in aud_aspectos
+                )
+                tabla_pers = "".join(
+                    f"<tr><td style='padding:4px;border:1px solid #ddd'>{p['item']}</td>"
+                    f"<td style='padding:4px;border:1px solid #ddd'>{p['nombre']}</td>"
+                    f"<td style='padding:4px;border:1px solid #ddd'>{p['cedula']}</td></tr>"
+                    for p in personal_valido
+                )
+                cuerpo_aud = f"""<html><body style='font-family:Arial,sans-serif;color:#1a1a2e'>
+<h2 style='color:#c0392b'>🏭 Quimpac Ecuador S.A. — Auditoría de Permisos de Trabajo</h2>
+<table style='border-collapse:collapse;width:100%;margin-bottom:12px'>
+  <tr><td style='padding:5px;font-weight:bold'>Trabajo realizado por:</td><td>{aud_trabajo_por}</td></tr>
+  <tr><td style='padding:5px;font-weight:bold'>Área:</td><td>{aud_area}</td></tr>
+  <tr><td style='padding:5px;font-weight:bold'>Permiso abierto por:</td><td>{aud_abre_permiso}</td></tr>
+  <tr><td style='padding:5px;font-weight:bold'>Fecha:</td><td>{aud_fecha.strftime('%d/%m/%Y')}</td></tr>
+  <tr><td style='padding:5px;font-weight:bold'>Auditor:</td><td>{aud_realizada_por}</td></tr>
+  <tr><td style='padding:5px;font-weight:bold'>Cumplimiento:</td><td><b>{pct}%</b> ({cumplidos}/{len(ASPECTOS)} aspectos)</td></tr>
+</table>
+<h3>Aspectos evaluados</h3>
+<table style='border-collapse:collapse;width:100%;font-size:.9rem'>
+  <tr style='background:#f3f4f6'>
+    <th style='padding:5px;border:1px solid #ddd'>Item</th>
+    <th style='padding:5px;border:1px solid #ddd'>Aspecto</th>
+    <th style='padding:5px;border:1px solid #ddd'>Cumple</th>
+    <th style='padding:5px;border:1px solid #ddd'>Observación</th>
+  </tr>{tabla_asp}
+</table>
+<h3>Personal auditado</h3>
+<table style='border-collapse:collapse;width:60%;font-size:.9rem'>
+  <tr style='background:#f3f4f6'>
+    <th style='padding:5px;border:1px solid #ddd'>#</th>
+    <th style='padding:5px;border:1px solid #ddd'>Nombre</th>
+    <th style='padding:5px;border:1px solid #ddd'>Cédula</th>
+  </tr>{tabla_pers}
+</table>
+<p style='margin-top:12px'><b>Observaciones:</b> {aud_observaciones or "—"}</p>
+<hr><p style='font-size:.8rem;color:#6b7280'>Reporte automático — Quimpac Ecuador S.A. Security Access</p>
+</body></html>"""
+
+                try:
+                    smtp_host = os.environ.get("SMTP_HOST", "")
+                    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+                    smtp_user = os.environ.get("SMTP_USER", "")
+                    smtp_pass = os.environ.get("SMTP_PASS", "")
+                    msg = MIMEMultipart()
+                    msg["From"]    = smtp_user
+                    msg["To"]      = aud_si_email
+                    msg["Subject"] = f"[Security Access] Auditoría de Permisos — {aud_area} — {aud_fecha.strftime('%d/%m/%Y')}"
+                    msg.attach(MIMEText(cuerpo_aud, "html"))
+                    # Adjuntar evidencia si la hay
+                    if aud_archivo:
+                        part = MIMEApplication(aud_archivo.getvalue(), Name=aud_archivo.name)
+                        part["Content-Disposition"] = f'attachment; filename="{aud_archivo.name}"'
+                        msg.attach(part)
+                    with smtplib.SMTP(smtp_host, smtp_port) as srv:
+                        srv.starttls()
+                        srv.login(smtp_user, smtp_pass)
+                        srv.sendmail(smtp_user, [aud_si_email], msg.as_string())
+                    adj_txt = f" + evidencia adjunta ({aud_archivo.name})" if aud_archivo else ""
+                    st.success(f"📧 Reporte enviado a **{aud_si_sel}** ({aud_si_email}){adj_txt}")
+                except Exception as e_mail:
+                    st.error(f"❌ Error al enviar correo: {e_mail}")
